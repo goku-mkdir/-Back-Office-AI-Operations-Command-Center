@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import html
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 import altair as alt
@@ -19,6 +21,12 @@ import httpx
 import pandas as pd
 import streamlit as st
 import yaml
+
+# Ensure `src/` is importable when launched directly on Streamlit Community Cloud
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_SRC_PATH = str(_PROJECT_ROOT / "src")
+if _SRC_PATH not in sys.path:
+    sys.path.insert(0, _SRC_PATH)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 
@@ -201,21 +209,170 @@ st.markdown(
 
 
 # =============================================================================
-# API CLIENT HELPERS
+# HYBRID BACKEND CLIENT (FastAPI HTTP OR Embedded In-Process Runtime for Streamlit Cloud)
 # =============================================================================
+@st.cache_resource
+def _get_embedded_runtime() -> Any:
+    """In-process LangGraph runtime used automatically on Streamlit Community Cloud."""
+    from backoffice_agent.agent.graph import BackOfficeAgentRuntime
+    from backoffice_agent.settings import Settings
+
+    # Use writable temp/data path safely on cloud containers
+    db_path = os.getenv("DATABASE_PATH", str(_PROJECT_ROOT / "data" / "backoffice_agent.db"))
+    settings = Settings(DATABASE_PATH=db_path)
+    return BackOfficeAgentRuntime(settings=settings)
+
+
+def _fastapi_is_reachable() -> bool:
+    if os.getenv("FORCE_EMBEDDED_RUNTIME", "").lower() in ("1", "true", "yes"):
+        return False
+    try:
+        r = httpx.get(f"{API_BASE_URL}/health", timeout=1.2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+USE_REMOTE_API = _fastapi_is_reachable()
+
+
+def _embedded_dispatch(method: str, path: str, params: dict[str, Any] | None = None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    rt = _get_embedded_runtime()
+    params = params or {}
+    payload = payload or {}
+
+    if method == "GET" and path == "/health":
+        return {
+            "status": "ok",
+            "app_mode": rt.settings.app_mode,
+            "llm_provider": rt.settings.llm_provider,
+            "connectors": {
+                "email": "live" if rt.email.is_live else "sandbox",
+                "slack": "live" if rt.slack.is_live else "sandbox",
+                "hris": "live" if rt.hris.is_live else "sandbox",
+                "accounting": "live" if rt.accounting.is_live else "sandbox",
+                "crm": "live" if rt.crm.is_live else "sandbox",
+            },
+            "pending_approvals": len(rt.db.list_approval_requests(status="pending")),
+            "backend_mode": "embedded",
+        }
+
+    if method == "GET" and path == "/metrics":
+        runs = rt.db.list_runs(limit=500)
+        approvals = rt.db.list_approval_requests(limit=500)
+        logs = rt.audit.search(limit=500)
+        invoices = rt.accounting.list_invoices()
+        expenses = rt.accounting.list_expenses()
+        leads = rt.crm.list_leads()
+        candidates = rt.hris.list_candidates()
+        outbound = rt.db.list_outbound_messages(limit=200)
+        auto_execs = sum(1 for l in logs if l["event_type"] == "autonomous_execution")
+        resumed_execs = sum(1 for l in logs if l["event_type"] == "resumed_execution")
+        rejected_execs = sum(1 for l in logs if l["event_type"] == "approval_rejected")
+        total_actions = auto_execs + resumed_execs + rejected_execs
+        auto_rate = round((auto_execs / total_actions) * 100, 1) if total_actions else 100.0
+        return {
+            "total_runs": len(runs),
+            "pending_approvals": sum(1 for a in approvals if a["status"] == "pending"),
+            "approved_count": sum(1 for a in approvals if a["status"] == "approved"),
+            "rejected_count": sum(1 for a in approvals if a["status"] == "rejected"),
+            "autonomous_actions": auto_execs,
+            "hitl_executed_actions": resumed_execs,
+            "blocked_actions": rejected_execs,
+            "autonomy_rate_pct": auto_rate,
+            "estimated_minutes_saved": auto_execs * 12 + resumed_execs * 8,
+            "ar_paid_sgd": sum(float(i["amount"]) for i in invoices if i["status"] == "paid"),
+            "ar_sent_sgd": sum(float(i["amount"]) for i in invoices if i["status"] == "sent"),
+            "ar_overdue_sgd": sum(float(i["amount"]) for i in invoices if i["status"] == "overdue"),
+            "ar_draft_sgd": sum(float(i["amount"]) for i in invoices if i["status"] == "draft"),
+            "expenses_total_sgd": sum(float(e["amount"]) for e in expenses),
+            "pipeline_total_sgd": sum(float(l["estimated_value"]) for l in leads),
+            "active_candidates": len(candidates),
+            "emails_sent": sum(1 for m in outbound if m["channel"] == "email"),
+            "slack_alerts": sum(1 for m in outbound if m["channel"] == "slack"),
+        }
+
+    if method == "GET" and path == "/sandbox/overview":
+        return {
+            "employees": rt.hris.list_employees(),
+            "candidates": rt.hris.list_candidates(),
+            "invoices": rt.accounting.list_invoices(),
+            "expenses": rt.accounting.list_expenses(),
+            "leads": rt.crm.list_leads(),
+            "quotes": rt.crm.list_quotes(),
+            "followups": rt.crm.list_followups(),
+            "outbound_messages": rt.db.list_outbound_messages(limit=50),
+        }
+
+    if method == "POST" and path == "/sandbox/reset":
+        from langgraph.checkpoint.memory import MemorySaver
+
+        rt.db.reset_sandbox()
+        rt.checkpointer = MemorySaver()
+        rt.graph = rt._build_graph()
+        return {"reset": True}
+
+    if method == "POST" and path == "/agent/run":
+        return rt.run_request(str(payload.get("request", "")))
+
+    if method == "GET" and path == "/approvals":
+        return {"approvals": rt.db.list_approval_requests(status=params.get("status"), limit=int(params.get("limit", 100)))}
+
+    if method == "POST" and path.startswith("/approvals/") and path.endswith("/decision"):
+        approval_id = path.split("/")[2]
+        return rt.resolve_approval(
+            approval_id=approval_id,
+            approved=bool(payload.get("approved", False)),
+            decided_by=str(payload.get("decided_by", "Operations Manager")),
+            note=str(payload.get("note", "")),
+        )
+
+    if method == "GET" and path == "/audit":
+        logs = rt.audit.search(
+            domain=params.get("domain") or None,
+            event_type=params.get("event_type") or None,
+            status=params.get("status") or None,
+            action_name=params.get("action_name") or None,
+            run_id=params.get("run_id") or None,
+            query=params.get("query") or None,
+            limit=int(params.get("limit", 100)),
+        )
+        return {"count": len(logs), "logs": logs}
+
+    if method == "GET" and path == "/config/rules":
+        return {"raw": rt.config_manager.load_rules_raw(), "parsed": rt.config_manager.load_rules()}
+
+    if method == "PUT" and path == "/config/rules":
+        return {"saved": True, "parsed": rt.config_manager.save_rules_raw(str(payload.get("content", "")))}
+
+    if method == "GET" and path == "/config/prompts":
+        return {"raw": rt.config_manager.load_prompts_raw(), "parsed": rt.config_manager.load_prompts()}
+
+    if method == "PUT" and path == "/config/prompts":
+        return {"saved": True, "parsed": rt.config_manager.save_prompts_raw(str(payload.get("content", "")))}
+
+    raise ValueError(f"Unsupported embedded route: {method} {path}")
+
+
 def api_get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not USE_REMOTE_API:
+        return _embedded_dispatch("GET", path, params=params)
     resp = httpx.get(f"{API_BASE_URL}{path}", params=params, timeout=20.0)
     resp.raise_for_status()
     return resp.json()
 
 
 def api_post(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not USE_REMOTE_API:
+        return _embedded_dispatch("POST", path, payload=payload)
     resp = httpx.post(f"{API_BASE_URL}{path}", json=payload or {}, timeout=30.0)
     resp.raise_for_status()
     return resp.json()
 
 
 def api_put(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not USE_REMOTE_API:
+        return _embedded_dispatch("PUT", path, payload=payload)
     resp = httpx.put(f"{API_BASE_URL}{path}", json=payload, timeout=20.0)
     resp.raise_for_status()
     return resp.json()
