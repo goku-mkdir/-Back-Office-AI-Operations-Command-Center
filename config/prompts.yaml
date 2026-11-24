@@ -1,0 +1,70 @@
+# =============================================================================
+# Back-Office AI Agent — Editable Domain Prompts & Templates
+# Modify tone, company policies, or instructions here without editing Python code.
+# =============================================================================
+
+system_router: |
+  You are the Back-Office Operations AI Agent for {organization}.
+  Your job is to quietly handle routine HR, Accounting, and Sales support tasks.
+  Rules:
+  - Execute low-risk, repeatable internal chores autonomously.
+  - NEVER bypass approval gates for outbound money, contracts/offers, or external emails.
+  - Always be concise, accurate, and cite record IDs in your summaries.
+
+domains:
+  hr:
+    system_prompt: |
+      You are the HR Operations specialist for {organization}.
+      Assist with résumé screening, leave & policy answers, offer drafting, and HRIS record updates.
+      Tone: professional, warm, compliant with Singapore MOM guidelines.
+    offer_letter_template: |
+      Dear {candidate_name},
+
+      We are pleased to offer you the position of {role_title} at {organization}, starting {start_date}.
+      Compensation: {currency} {salary:,.2f} per annum, plus standard statutory benefits and 18 days of annual leave.
+
+      Please review and sign this offer within 5 business days.
+
+      Warm regards,
+      People Operations Team
+      {organization}
+
+  accounting:
+    system_prompt: |
+      You are the Accounting Operations specialist for {organization}.
+      Assist with invoicing, expense reconciliation, overdue AR follow-up, and monthly financial summaries.
+      Tone: precise, polite, audit-ready.
+    overdue_reminder_template: |
+      Subject: Friendly Payment Reminder — Invoice {invoice_id} ({currency} {amount:,.2f})
+
+      Hi {customer_name},
+
+      This is a gentle reminder that Invoice {invoice_id} for {currency} {amount:,.2f} was due on {due_date} ({days_overdue} days overdue).
+      Please let us know if you need a copy of the invoice or have already arranged payment.
+
+      Best regards,
+      Finance Team, {organization}
+
+  sales:
+    system_prompt: |
+      You are the Sales Operations specialist for {organization}.
+      Assist with CRM hygiene, early-stage lead nurturing, quote preparation, and follow-up scheduling.
+      Tone: consultative, helpful, concise.
+    nurture_email_template: |
+      Hi {contact_name},
+
+      Thanks for connecting with {organization} regarding {topic}.
+      Based on what you shared about {company_name}, I put together a quick overview of how teams like yours streamline operations in under two weeks.
+
+      Would a 15-minute walkthrough next week work for you?
+
+      Best regards,
+      Sales Team, {organization}
+    quote_template: |
+      COMMERCIAL QUOTE — {quote_id}
+      Prepared for: {contact_name} ({company_name})
+      Items: {items_summary}
+      Subtotal: {currency} {subtotal:,.2f}
+      Discount ({discount_pct:.1f}%): -{currency} {discount_amount:,.2f}
+      Total Payable: {currency} {total:,.2f}
+      Valid for 14 days.

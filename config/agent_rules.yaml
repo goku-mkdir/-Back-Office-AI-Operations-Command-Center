@@ -1,0 +1,142 @@
+# =============================================================================
+# Back-Office AI Agent — Rules, Risk Tiers & Approval Thresholds
+# Edit this file directly or via the Streamlit Config Dashboard (no code changes needed).
+# =============================================================================
+
+version: "1.0"
+organization: "Acme Operations Pte Ltd"
+currency: "SGD"
+
+# Global guardrails: any action matching these categories ALWAYS pauses for human approval.
+global_approval_triggers:
+  external_email: true          # Any email leaving the organization
+  outbound_money: true          # Any payment, reimbursement, or invoice sent externally
+  contract_or_offer: true       # Any offer letter, quote with binding terms, or contract
+
+# Monetary thresholds (in organization currency)
+thresholds:
+  expense_auto_reconcile_max: 250.00      # Expenses <= 250 SGD can be auto-reconciled internally
+  expense_disbursement_approval_min: 0.01 # Any outbound money movement requires approval
+  invoice_auto_draft_max: 50000.00        # Drafting is safe; sending always triggers approval
+  quote_max_auto_discount_pct: 10.0       # Discounts > 10% require sales director sign-off
+  salary_change_approval_min: 1.00        # Any compensation change requires HR approval
+
+# Per-action policy matrix
+# risk_level: low | medium | high
+# require_approval: true | false | "conditional" (evaluated against thresholds)
+actions:
+  # --- HR ---
+  screen_resume:
+    domain: hr
+    risk_level: low
+    require_approval: false
+    description: "Score an incoming résumé against role requirements and save screening notes."
+  answer_hr_policy:
+    domain: hr
+    risk_level: low
+    require_approval: false
+    description: "Answer employee policy or leave balance questions internally."
+  update_employee_file:
+    domain: hr
+    risk_level: medium
+    require_approval: conditional
+    condition: "compensation_change"
+    approver_role: "HR Manager"
+    description: "Update employee record in HRIS (auto for contact/notes, gated for salary/title)."
+  draft_offer_letter:
+    domain: hr
+    risk_level: low
+    require_approval: false
+    description: "Generate a draft offer letter document for internal review."
+  send_offer_letter:
+    domain: hr
+    risk_level: high
+    require_approval: true
+    category: contract_or_offer
+    approver_role: "HR Director"
+    description: "Send offer letter / employment contract externally to candidate."
+
+  # --- Accounting ---
+  generate_invoice:
+    domain: accounting
+    risk_level: low
+    require_approval: false
+    description: "Create a draft invoice in the accounting system."
+  send_invoice:
+    domain: accounting
+    risk_level: high
+    require_approval: true
+    category: external_email
+    approver_role: "Finance Controller"
+    description: "Email an invoice externally to a customer."
+  reconcile_expense:
+    domain: accounting
+    risk_level: medium
+    require_approval: conditional
+    condition: "expense_threshold"
+    approver_role: "Finance Controller"
+    description: "Match receipt & categorize expense; pauses if above auto-reconcile threshold."
+  disburse_expense:
+    domain: accounting
+    risk_level: high
+    require_approval: true
+    category: outbound_money
+    approver_role: "Finance Controller"
+    description: "Initiate outbound reimbursement payout to an employee or vendor."
+  chase_overdue_invoices:
+    domain: accounting
+    risk_level: high
+    require_approval: true
+    category: external_email
+    approver_role: "Finance Controller"
+    description: "Send payment reminder email externally to a customer with overdue balance."
+  compile_monthly_summary:
+    domain: accounting
+    risk_level: low
+    require_approval: false
+    description: "Compile monthly revenue, expense, and AR summary and post internally to Slack."
+
+  # --- Sales ---
+  update_crm_lead:
+    domain: sales
+    risk_level: low
+    require_approval: false
+    description: "Update lead stage, score, or call notes inside CRM."
+  draft_nurture_email:
+    domain: sales
+    risk_level: low
+    require_approval: false
+    description: "Draft a personalized follow-up email for an early-stage lead."
+  send_nurture_email:
+    domain: sales
+    risk_level: high
+    require_approval: true
+    category: external_email
+    approver_role: "Sales Manager"
+    description: "Send an external lead-nurturing email."
+  prepare_quote:
+    domain: sales
+    risk_level: medium
+    require_approval: conditional
+    condition: "quote_discount"
+    approver_role: "Sales Director"
+    description: "Prepare a customer quote; pauses if discount exceeds allowed auto-discount %."
+  send_quote:
+    domain: sales
+    risk_level: high
+    require_approval: true
+    category: contract_or_offer
+    approver_role: "Sales Director"
+    description: "Send commercial quote / proposal externally to prospect."
+  schedule_followup:
+    domain: sales
+    risk_level: low
+    require_approval: false
+    description: "Schedule an internal CRM follow-up task and reminder for the account owner."
+
+# Alerting & Audit settings
+alerting:
+  notify_slack_on_approval_request: true
+  notify_slack_on_high_risk_execution: true
+  notify_slack_on_error: true
+  approval_expiry_hours: 48

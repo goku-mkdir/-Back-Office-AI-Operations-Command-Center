@@ -1,0 +1,28 @@
+services:
+  api:
+    build: .
+    container_name: backoffice-agent-api
+    env_file:
+      - .env.example
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    command: uvicorn backoffice_agent.api.app:app --host 0.0.0.0 --port 8000
+
+  dashboard:
+    build: .
+    container_name: backoffice-agent-dashboard
+    depends_on:
+      - api
+    environment:
+      - API_BASE_URL=http://api:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./config:/app/config
+    command: streamlit run src/backoffice_agent/dashboard/app.py --server.port 8501 --server.address 0.0.0.0
